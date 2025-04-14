@@ -2,96 +2,185 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Chess Game Evaluator</title>
+  <title>Chess.com Game Analyzer</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/1.0.0/chess.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mliebelt/pgn-parser@1.3.4/dist/pgn-parser.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/stockfish/stockfish.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chessboardjs@1.0.0/www/js/chessboard-1.0.0.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessboardjs@1.0.0/www/css/chessboard-1.0.0.min.css">
   <style>
-    body { font-family: sans-serif; background: #f0f0f0; padding: 20px; }
-    #board { max-width: 400px; margin-bottom: 20px; }
-    .move { margin: 5px 0; }
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #f0f0f0;
+    }
+    h2 {
+      text-align: center;
+    }
+    #board {
+      width: 400px;
+      margin: 20px auto;
+    }
+    #gameList {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .game-btn {
+      display: inline-block;
+      margin: 5px;
+      padding: 8px 14px;
+      background: #0077cc;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .game-btn:hover {
+      background: #005fa3;
+    }
+    #analysis {
+      max-width: 700px;
+      margin: 0 auto;
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+    .move {
+      padding: 5px 0;
+      border-bottom: 1px solid #eee;
+    }
+    #export-btn {
+      display: block;
+      margin: 20px auto;
+      padding: 10px 20px;
+      font-size: 16px;
+      background: #444;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    #export-btn:hover {
+      background: #222;
+    }
   </style>
 </head>
 <body>
-  <h2>Chess Game Evaluator</h2>
-  <div id="status">Loading...</div>
-  <div id="moves"></div>
+  <h2>Chess.com Game Analyzer</h2>
+  <div id="gameList">Loading games...</div>
+  <div id="board"></div>
+  <div id="analysis">Analysis will appear here.</div>
+  <button id="export-btn" style="display: none;">Export moveList (TCN)</button>
 
   <script>
-    const userIdUrl = "https://www.chess.com/callback/user/popup/doubleZZFlav";
-    const gamesUrlBase = "https://www.chess.com/callback/user/games?locale=en_US&all=1&userId=";
+    const userId = 15448422; // Hikaru's Chess.com ID
+    const board = Chessboard('board', 'start');
+    const gameListDiv = document.getElementById('gameList');
+    const analysisDiv = document.getElementById('analysis');
+    const exportBtn = document.getElementById('export-btn');
 
-    const stockfish = Stockfish();
-    stockfish.onmessage = (event) => {
-      if (typeof event === "string" && event.startsWith("info depth")) {
-        const match = event.match(/score cp (-?\d+)/);
-        if (match && currentEvalCallback) {
-          const score = parseInt(match[1], 10) / 100;
-          currentEvalCallback(score);
-          currentEvalCallback = null;
-        }
-      }
-    };
+    let currentChessGame = null;
+    let stockfish;
 
-    let currentEvalCallback = null;
-
-    async function fetchLatestGame() {
-      const userData = await fetch(userIdUrl).then(res => res.json());
-      const userId = userData?.id;
-      if (!userId) return document.getElementById("status").innerText = "User ID not found";
-
-      const gamesData = await fetch(gamesUrlBase + userId).then(res => res.json());
-      const latestGame = gamesData?.games?.[0];
-      if (!latestGame) return document.getElementById("status").innerText = "No games found";
-
-      const pgn = latestGame.pgn;
-      analyzePGN(pgn);
+    async function initStockfish() {
+      stockfish = new Worker("https://cdn.jsdelivr.net/gh/niklasf/stockfish.js/stockfish.wasm.js");
     }
 
-    function analyzePGN(pgn) {
-      const parsed = pgnParser.parse(pgn)[0];
-      const game = new Chess();
-      const moves = parsed.moves.map(move => move.move);
-
-      const movesDiv = document.getElementById("moves");
-      document.getElementById("status").innerText = "Analyzing moves...";
-
-      let index = 0;
-
-      function evalNextMove() {
-        if (index >= moves.length) {
-          document.getElementById("status").innerText = "Done analyzing.";
-          return;
-        }
-
-        const move = moves[index];
-        const moveResult = game.move(move);
-
-        if (!moveResult) {
-          console.log("Illegal move:", move);
-          index++;
-          evalNextMove();
-          return;
-        }
-
-        const fen = game.fen();
+    function getBestMove(fen) {
+      return new Promise(resolve => {
+        stockfish.postMessage("uci");
+        stockfish.postMessage("ucinewgame");
         stockfish.postMessage("position fen " + fen);
-        stockfish.postMessage("go depth 15");
+        stockfish.postMessage("go depth 10");
 
-        currentEvalCallback = (score) => {
-          const moveEl = document.createElement("div");
-          moveEl.className = "move";
-          moveEl.innerText = `${index + 1}. ${move} (Eval: ${score})`;
-          movesDiv.appendChild(moveEl);
-          index++;
-          setTimeout(evalNextMove, 300); // Delay to avoid freezing UI
+        stockfish.onmessage = function(event) {
+          if (typeof event.data === "string" && event.data.startsWith("bestmove")) {
+            const move = event.data.split(" ")[1];
+            resolve(move);
+          }
         };
-      }
-
-      evalNextMove();
+      });
     }
 
-    fetchLatestGame();
+    async function fetchGames() {
+      try {
+        const res = await fetch(`https://www.chess.com/callback/user/games?locale=en_US&all=1&userId=${userId}`);
+        const data = await res.json();
+        showGameButtons(data.games);
+      } catch (err) {
+        gameListDiv.innerHTML = "Error loading games.";
+        console.error(err);
+      }
+    }
+
+    function showGameButtons(games) {
+      gameListDiv.innerHTML = '<h3>Select a Game:</h3>';
+      games.forEach((game, index) => {
+        if (!game.moveList) return;
+
+        const btn = document.createElement('button');
+        btn.innerText = `Game ${index + 1} vs ${game.user2?.username || 'Opponent'}`;
+        btn.className = 'game-btn';
+        btn.onclick = () => analyzeMoveList(game.moveList);
+        gameListDiv.appendChild(btn);
+      });
+    }
+
+    async function analyzeMoveList(moveList) {
+      const chess = new Chess();
+      currentChessGame = chess; // for exporting
+      const analysisOutput = [];
+
+      analysisDiv.innerHTML = "<p>Analyzing moves...</p>";
+      board.position('start');
+      exportBtn.style.display = 'none';
+
+      for (let i = 0; i < moveList.length; i += 4) {
+        let moveUci = moveList.slice(i, i + 4);
+        if (moveList[i + 4] && 'nbrq'.includes(moveList[i + 4])) {
+          moveUci += moveList[i + 4];
+          i++; // Skip promotion char
+        }
+
+        const move = {
+          from: moveUci.slice(0, 2),
+          to: moveUci.slice(2, 4),
+          promotion: moveUci[4] || undefined
+        };
+
+        const legalMove = chess.move(move);
+        if (!legalMove) {
+          analysisOutput.push(`<div class="move">Illegal move at ${i / 4 + 1}: ${moveUci}</div>`);
+          break;
+        }
+
+        const fen = chess.fen();
+        board.position(fen);
+        const bestMove = await getBestMove(fen);
+        analysisOutput.push(`<div class="move"><strong>Move ${i / 4 + 1}:</strong> ${moveUci} | Best: ${bestMove}</div>`);
+      }
+
+      analysisDiv.innerHTML = analysisOutput.join('');
+      exportBtn.style.display = 'block';
+    }
+
+    function encodeMoveListFromHistory(history) {
+      return history.map(move => {
+        let uci = move.from + move.to;
+        if (move.promotion) uci += move.promotion;
+        return uci;
+      }).join('');
+    }
+
+    exportBtn.addEventListener('click', () => {
+      if (!currentChessGame) return;
+      const history = currentChessGame.history({ verbose: true });
+      const tcn = encodeMoveListFromHistory(history);
+      alert("moveList (TCN):\n" + tcn);
+      console.log("Encoded moveList:", tcn);
+    });
+
+    initStockfish();
+    fetchGames();
   </script>
 </body>
 </html>
